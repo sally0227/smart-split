@@ -1,5 +1,5 @@
 {
-  "name": "smart-split",
+  "name": "smart-split-app",
   "private": true,
   "version": "1.0.0",
   "type": "module",
