@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Group, Member, Expense, SplitDetail, Transaction, HistoryRecord } from './types';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Group, Expense, SplitDetail, Transaction } from './types';
 import { calculateBalances, calculateMinimalTransactions, getDetailedRawDebts } from './utils/algorithm';
-import { generateHistoryArtifact, explainSettlementLogic } from './services/geminiService';
+import { explainSettlementLogic } from './services/geminiService';
 import { HistoryTimeline } from './components/HistoryTimeline';
 import { 
-  Plus, Users, Calculator, CheckCircle, Trash2, ArrowRight, Wallet, 
-  CreditCard, PieChart, ChevronLeft, LogOut, Edit2, ChevronDown, ChevronUp, Loader2, Archive, Smartphone, AlertTriangle
+  Plus, Users, Calculator, CheckCircle, ArrowRight, Wallet, 
+  CreditCard, PieChart, ChevronLeft, LogOut, Loader2, Archive, Smartphone
 } from 'lucide-react';
 
 const STORAGE_KEY = 'smartsplit_data_v2';
@@ -693,7 +693,8 @@ const App: React.FC = () => {
 
   // --- Render 5: Dashboard (Main) ---
   const activeExpenses = isMyDebtCleared ? [] : (currentGroup?.expenses || []);
-  
+  const historyCount = currentGroup?.history?.length || 0;
+
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
        {/* Header */}
@@ -790,7 +791,7 @@ const App: React.FC = () => {
          </div>
 
          {/* History Separator */}
-         {currentGroup?.history.length > 0 && (
+         {historyCount > 0 && (
              <div className="relative py-10 mt-6">
                 <div className="absolute inset-0 flex items-center"><div className="w-full border-t-2 border-dashed border-gray-300"></div></div>
                 <div className="relative flex justify-center"><span className="px-4 bg-gray-50 text-sm font-bold text-gray-500 uppercase flex items-center gap-2"><Archive className="w-4 h-4"/> 歷史紀錄與結算</span></div>
@@ -824,4 +825,5 @@ const App: React.FC = () => {
     </div>
   );
 };
+
 export default App;
