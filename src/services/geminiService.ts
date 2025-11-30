@@ -1,3 +1,4 @@
+declare const process: any;
 import { GoogleGenAI } from "@google/genai";
 import { Expense, Group, Member, Transaction } from "../types";
 
@@ -127,3 +128,4 @@ export const explainSettlementLogic = async (
     return "系統已自動簡化債務關係。";
   }
 };
+
