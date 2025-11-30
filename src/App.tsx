@@ -89,12 +89,6 @@ const App: React.FC = () => {
     return currentGroup.deviceBindings?.[deviceId] || null;
   }, [currentGroup, deviceId]);
 
-  // Have I cleared my debt for the current active session?
-  const isMyDebtCleared = useMemo(() => {
-    if (!currentGroup || !myMemberId) return false;
-    return currentGroup.clearedMemberIds?.includes(myMemberId) || false;
-  }, [currentGroup, myMemberId]);
-
   const generateId = () => Math.random().toString(36).substr(2, 9);
 
   // --- Identity Check Logic ---
@@ -471,12 +465,6 @@ const App: React.FC = () => {
     } finally {
         setIsProcessingHistory(false);
     }
-  };
-
-  const handleClearMyDebt = async () => {
-      // Compatibility function if called, redirects to Clear All (Admin Mode)
-      // But mainly we use handleClearAllDebt now.
-      handleClearAllDebt();
   };
 
   // --- Render 1: Identity Setup ---
