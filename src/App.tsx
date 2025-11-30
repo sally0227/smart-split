@@ -5,7 +5,7 @@ import { generateHistoryArtifact, explainSettlementLogic } from './services/gemi
 import { HistoryTimeline } from './components/HistoryTimeline';
 import { 
   Plus, Users, Calculator, CheckCircle, ArrowRight, Wallet, 
-  CreditCard, PieChart, ChevronLeft, LogOut, Loader2, Archive, Smartphone, Lightbulb
+  CreditCard, PieChart, ChevronLeft, LogOut, Loader2, Archive, Smartphone, Lightbulb, Trash2, X, UserMinus
 } from 'lucide-react';
 
 const STORAGE_KEY = 'smartsplit_data_v2';
@@ -43,6 +43,9 @@ const App: React.FC = () => {
   const [newMemberName, setNewMemberName] = useState('');
   const [identitySelection, setIdentitySelection] = useState<string>('');
   
+  // UI State for Delete Mode
+  const [isDeleteMemberMode, setIsDeleteMemberMode] = useState(false);
+  
   // Expense List State
   const [expandedExpenseId, setExpandedExpenseId] = useState<string | null>(null);
 
@@ -61,6 +64,7 @@ const App: React.FC = () => {
     transactions: (Transaction & { fromName: string; toName: string })[];
     balances: Record<string, number>;
     explanation: string;
+    myTransactions: (Transaction & { fromName: string; toName: string })[]; // Transactions relevant to the current user
   } | null>(null);
   const [isExplaining, setIsExplaining] = useState(false);
   const [isProcessingHistory, setIsProcessingHistory] = useState(false);
@@ -84,6 +88,12 @@ const App: React.FC = () => {
     if (!currentGroup || !deviceId) return null;
     return currentGroup.deviceBindings?.[deviceId] || null;
   }, [currentGroup, deviceId]);
+
+  // Have I cleared my debt for the current active session?
+  const isMyDebtCleared = useMemo(() => {
+    if (!currentGroup || !myMemberId) return false;
+    return currentGroup.clearedMemberIds?.includes(myMemberId) || false;
+  }, [currentGroup, myMemberId]);
 
   const generateId = () => Math.random().toString(36).substr(2, 9);
 
@@ -151,6 +161,16 @@ const App: React.FC = () => {
     setNewGroupName('');
   };
 
+  const handleDeleteGroup = () => {
+      if (!currentGroup) return;
+      if (!window.confirm(`確定要刪除群組 "${currentGroup.name}" 嗎？\n此動作無法復原，所有紀錄將會消失。`)) return;
+
+      const updatedGroups = groups.filter(g => g.id !== currentGroup.id);
+      setGroups(updatedGroups);
+      setCurrentGroupId(null);
+      setView('DASHBOARD');
+  };
+
   const handleAddMember = () => {
     if (!currentGroupId || !newMemberName.trim()) return;
     const newId = generateId();
@@ -170,6 +190,74 @@ const App: React.FC = () => {
     if (view === 'IDENTITY_SETUP') {
         setIdentitySelection(newId);
     }
+  };
+
+  const handleDeleteMember = (memberId: string) => {
+      if (!currentGroup) return;
+      const memberName = currentMemberMap.get(memberId);
+      
+      // 1. Check if member is a PAYER in any active expense
+      const isPayer = currentGroup.expenses.some(e => e.paidBy.some(p => p.memberId === memberId));
+      if (isPayer) {
+          alert(`無法刪除 "${memberName}"！\n\n原因：該成員在目前的帳務中有「先墊付」的款項。\n\n請先編輯或刪除相關花費，確認該成員沒有代墊款項後才能刪除。`);
+          return;
+      }
+
+      if (!window.confirm(`確定要刪除成員 "${memberName}" 嗎？\n\n注意：\n1. 該成員將從群組中移除。\n2. 該成員在所有未結算花費中的分攤金額，將自動平均重新分配給剩下的成員。`)) return;
+
+      const updatedGroups = groups.map(g => {
+          if (g.id !== currentGroupId) return g;
+
+          // A. Remove from members list
+          const newMembers = g.members.filter(m => m.id !== memberId);
+          
+          // B. Remove from device bindings
+          const newBindings = { ...g.deviceBindings };
+          Object.keys(newBindings).forEach(key => {
+              if (newBindings[key] === memberId) delete newBindings[key];
+          });
+
+          // C. Update Expenses (Redistribute logic)
+          const newExpenses = g.expenses.map(e => {
+              // Is the deleted person involved in the split?
+              const wasSplitter = e.splitAmong.some(s => s.memberId === memberId);
+              
+              if (!wasSplitter) return e; // Not involved, no change needed
+
+              // Filter out the deleted member
+              const newSplitAmongIds = e.splitAmong
+                  .filter(s => s.memberId !== memberId)
+                  .map(s => s.memberId);
+              
+              if (newSplitAmongIds.length === 0) {
+                  // If no one is left to split, this expense is invalid. 
+                  return null; 
+              }
+
+              // Redistribute total amount equally among remaining members
+              // We assume 'EQUAL' distribution for simplicity when force-deleting a member
+              const newShare = e.totalAmount / newSplitAmongIds.length;
+              const newSplitDetails = newSplitAmongIds.map(id => ({
+                  memberId: id,
+                  amount: newShare
+              }));
+
+              return {
+                  ...e,
+                  splitAmong: newSplitDetails
+              };
+          }).filter(Boolean) as Expense[];
+
+          return {
+              ...g,
+              members: newMembers,
+              deviceBindings: newBindings,
+              expenses: newExpenses
+          };
+      });
+
+      setGroups(updatedGroups);
+      setIsDeleteMemberMode(false); // Exit delete mode
   };
 
   // --- Handlers: Expense ---
@@ -308,13 +396,17 @@ const App: React.FC = () => {
       toName: memberMap.get(t.to) || t.to
     }));
 
+    // Identify my transactions
+    const myTransactions = namedTransactions.filter(t => t.from === myMemberId || t.to === myMemberId);
+
     const aiExplanation = await explainSettlementLogic(memberMap, balances, transactions);
 
     setSettlementResult({
       rawDebts,
       transactions: namedTransactions,
       balances,
-      explanation: aiExplanation
+      explanation: aiExplanation,
+      myTransactions
     });
     setIsExplaining(false);
   };
@@ -379,6 +471,12 @@ const App: React.FC = () => {
     } finally {
         setIsProcessingHistory(false);
     }
+  };
+
+  const handleClearMyDebt = async () => {
+      // Compatibility function if called, redirects to Clear All (Admin Mode)
+      // But mainly we use handleClearAllDebt now.
+      handleClearAllDebt();
   };
 
   // --- Render 1: Identity Setup ---
@@ -687,7 +785,13 @@ const App: React.FC = () => {
                     <LogOut className="w-5 h-5" />
                 </button>
                 <div>
-                    <h1 className="text-xl font-bold text-gray-900">{currentGroup?.name}</h1>
+                    <h1 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                        {currentGroup?.name}
+                        {/* Delete Group Button */}
+                        <button onClick={handleDeleteGroup} className="text-gray-300 hover:text-red-500 p-1">
+                            <Trash2 className="w-4 h-4" />
+                        </button>
+                    </h1>
                     <div className="flex items-center gap-2 text-xs text-gray-500">
                          <span>{currentGroup?.members.length} 位成員</span>
                          <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full font-bold">
@@ -704,17 +808,40 @@ const App: React.FC = () => {
          <div className="mb-6 overflow-x-auto scrollbar-hide">
             <div className="flex items-center gap-2">
                 {currentGroup?.members.map(m => (
-                    <div key={m.id} className="flex-shrink-0 px-3 py-1.5 rounded-full border text-sm font-medium flex items-center gap-1 bg-white border-gray-200 text-gray-700">
-                        {m.name}
+                    <div key={m.id} className="relative group flex-shrink-0">
+                         {/* Member Chip */}
+                        <div className={`px-3 py-1.5 rounded-full border text-sm font-medium flex items-center gap-1 bg-white border-gray-200 text-gray-700 ${isDeleteMemberMode ? 'ring-2 ring-red-200' : ''}`}>
+                            {m.name}
+                            {/* Delete Mode Trigger */}
+                            {isDeleteMemberMode && (
+                                <button 
+                                    onClick={() => handleDeleteMember(m.id)}
+                                    className="ml-1 bg-red-100 text-red-600 rounded-full p-0.5 hover:bg-red-200"
+                                >
+                                    <X className="w-3 h-3" />
+                                </button>
+                            )}
+                        </div>
                     </div>
                 ))}
                 
-                {/* Add Member Control */}
+                {/* Member Controls (Add & Delete Mode Toggle) */}
                 <div className="flex-shrink-0 flex items-center gap-2">
-                    <div className="flex items-center gap-1 bg-gray-100 px-3 py-1.5 rounded-full border border-gray-200">
-                        <input type="text" placeholder="新成員..." value={newMemberName} onChange={e=>setNewMemberName(e.target.value)} className="bg-transparent w-20 text-sm outline-none"/>
-                        <button onClick={handleAddMember} className="bg-indigo-600 text-white rounded-full p-0.5"><Plus className="w-3 h-3"/></button>
-                    </div>
+                    {!isDeleteMemberMode ? (
+                        <>
+                            <div className="flex items-center gap-1 bg-gray-100 px-3 py-1.5 rounded-full border border-gray-200">
+                                <input type="text" placeholder="新成員..." value={newMemberName} onChange={e=>setNewMemberName(e.target.value)} className="bg-transparent w-20 text-sm outline-none"/>
+                                <button onClick={handleAddMember} className="bg-indigo-600 text-white rounded-full p-0.5"><Plus className="w-3 h-3"/></button>
+                            </div>
+                            <button onClick={() => setIsDeleteMemberMode(true)} className="p-2 bg-gray-100 text-gray-500 rounded-full hover:bg-red-50 hover:text-red-500 transition-colors">
+                                <UserMinus className="w-4 h-4" />
+                            </button>
+                        </>
+                    ) : (
+                        <button onClick={() => setIsDeleteMemberMode(false)} className="px-3 py-1.5 bg-gray-200 text-gray-600 rounded-full text-sm font-bold hover:bg-gray-300">
+                            完成編輯
+                        </button>
+                    )}
                 </div>
             </div>
          </div>
