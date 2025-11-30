@@ -5,7 +5,7 @@ import { explainSettlementLogic } from './services/geminiService';
 import { HistoryTimeline } from './components/HistoryTimeline';
 import { 
   Plus, Users, Calculator, CheckCircle, ArrowRight, Wallet, 
-  CreditCard, PieChart, ChevronLeft, LogOut, Loader2, Archive, Smartphone
+  CreditCard, PieChart, ChevronLeft, LogOut, Loader2, Archive, Smartphone, Lightbulb
 } from 'lucide-react';
 
 const STORAGE_KEY = 'smartsplit_data_v2';
@@ -344,7 +344,7 @@ const App: React.FC = () => {
         // 3. Add Me to Cleared List
         // 4. If everyone cleared -> Finalize history (Generate SVG), Clear Expenses
 
-        const myTxns = settlementResult.transactions.filter(t => t.from === myMemberId || t.to === myMemberId);
+        const myTxns = settlementResult.myTransactions;
         
         // Use timeout to prevent UI freeze
         await new Promise(r => setTimeout(r, 500)); 
@@ -631,6 +631,32 @@ const App: React.FC = () => {
                 <div className="text-center py-20 bg-white rounded-xl shadow"><Loader2 className="animate-spin w-8 h-8 mx-auto text-indigo-500 mb-2"/> AI 計算中...</div>
             ) : settlementResult ? (
                 <>
+                    {/* NEW: Calculation Logic & Raw Debts */}
+                    <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
+                        <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2">
+                             <Lightbulb className="w-5 h-5 text-amber-500"/> AI 智慧算帳詳情
+                        </h3>
+                        
+                        <div className="space-y-4 text-sm">
+                            <div className="bg-gray-50 p-4 rounded-xl">
+                                <h4 className="font-bold text-gray-500 mb-2 text-xs uppercase tracking-wide">原始帳務 (未抵銷前)</h4>
+                                <ul className="space-y-1 text-gray-700">
+                                    {settlementResult.rawDebts.map((debt, i) => (
+                                        <li key={i}>{debt}</li>
+                                    ))}
+                                    {settlementResult.rawDebts.length === 0 && <li>無原始債務</li>}
+                                </ul>
+                            </div>
+                            
+                            <div className="bg-indigo-50 p-4 rounded-xl border border-indigo-100">
+                                <h4 className="font-bold text-indigo-800 mb-2 text-xs uppercase tracking-wide">AI 優化邏輯</h4>
+                                <p className="text-indigo-700 leading-relaxed">
+                                    {settlementResult.explanation}
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
                     {/* Personal Transactions (Highlight) */}
                     <div className="bg-white p-6 rounded-2xl border-l-4 border-indigo-500 shadow-md">
                         <h3 className="font-bold text-lg text-gray-800 mb-4 flex items-center gap-2">
@@ -693,7 +719,7 @@ const App: React.FC = () => {
 
   // --- Render 5: Dashboard (Main) ---
   const activeExpenses = isMyDebtCleared ? [] : (currentGroup?.expenses || []);
-  const historyCount = currentGroup?.history?.length || 0;
+  const historyCount = (currentGroup?.history?.length || 0);
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
