@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Group, Expense, SplitDetail, Transaction } from './types';
 import { calculateBalances, calculateMinimalTransactions, getDetailedRawDebts } from './utils/algorithm';
-import { explainSettlementLogic } from './services/geminiService';
+import { generateHistoryArtifact, explainSettlementLogic } from './services/geminiService';
 import { HistoryTimeline } from './components/HistoryTimeline';
 import { 
   Plus, Users, Calculator, CheckCircle, ArrowRight, Wallet, 
@@ -61,7 +61,6 @@ const App: React.FC = () => {
     transactions: (Transaction & { fromName: string; toName: string })[];
     balances: Record<string, number>;
     explanation: string;
-    myTransactions: (Transaction & { fromName: string; toName: string })[]; // Transactions relevant to the current user
   } | null>(null);
   const [isExplaining, setIsExplaining] = useState(false);
   const [isProcessingHistory, setIsProcessingHistory] = useState(false);
@@ -85,12 +84,6 @@ const App: React.FC = () => {
     if (!currentGroup || !deviceId) return null;
     return currentGroup.deviceBindings?.[deviceId] || null;
   }, [currentGroup, deviceId]);
-
-  // Have I cleared my debt for the current active session?
-  const isMyDebtCleared = useMemo(() => {
-    if (!currentGroup || !myMemberId) return false;
-    return currentGroup.clearedMemberIds?.includes(myMemberId) || false;
-  }, [currentGroup, myMemberId]);
 
   const generateId = () => Math.random().toString(36).substr(2, 9);
 
@@ -315,99 +308,74 @@ const App: React.FC = () => {
       toName: memberMap.get(t.to) || t.to
     }));
 
-    // Identify my transactions
-    const myTransactions = namedTransactions.filter(t => t.from === myMemberId || t.to === myMemberId);
-
     const aiExplanation = await explainSettlementLogic(memberMap, balances, transactions);
 
     setSettlementResult({
       rawDebts,
       transactions: namedTransactions,
       balances,
-      explanation: aiExplanation,
-      myTransactions
+      explanation: aiExplanation
     });
     setIsExplaining(false);
   };
 
-  const handleClearMyDebt = async () => {
-    if (!currentGroup || !settlementResult || !myMemberId) return;
-    if (!window.confirm("確定您已完成所有收付款項嗎？\n按下確定後，您的帳務將歸零並記錄至歷史圖表。")) return;
+  const handleClearAllDebt = async () => {
+    if (!currentGroup || !settlementResult) return;
+    if (!window.confirm("確定要結清所有款項並歸檔嗎？\n\n這將會：\n1. 清空目前的消費列表\n2. 產生歷史紀錄與圖表\n3. 讓您開始新一輪的記帳")) return;
 
     setIsProcessingHistory(true);
     const targetGroupId = currentGroupId;
+    const currentExpenses = currentGroup.expenses;
+    const settlementPlan = settlementResult.transactions;
 
     try {
-        // Logic:
-        // 1. Find or Create Active History Record
-        // 2. Append MY transactions to it
-        // 3. Add Me to Cleared List
-        // 4. If everyone cleared -> Finalize history (Generate SVG), Clear Expenses
+        // 1. Generate History Artifacts (Summary + SVG) using AI
+        const { summary, svg } = await generateHistoryArtifact(currentGroup, currentExpenses);
 
-        const myTxns = settlementResult.myTransactions;
+        // 2. Create the complete History Record
+        const totalSpent = currentExpenses.reduce((acc, curr) => acc + curr.totalAmount, 0);
         
-        // Use timeout to prevent UI freeze
-        await new Promise(r => setTimeout(r, 500)); 
+        // Calculate date range
+        const dates = currentExpenses.map(e => new Date(e.date).getTime());
+        const startDate = new Date(Math.min(...dates)).toISOString();
+        const endDate = new Date(Math.max(...dates)).toISOString();
 
+        const newHistoryRecord = {
+            id: generateId(),
+            startDate,
+            endDate,
+            summary,
+            visualGraph: svg,
+            expenses: currentExpenses,
+            settlementPlan: settlementPlan,
+            totalSpent,
+            isPartial: false // It's fully cleared
+        };
+
+        // 3. Update Group: Add History, Clear Active Expenses
         setGroups(prevGroups => prevGroups.map(g => {
             if (g.id !== targetGroupId) return g;
-
-            let updatedHistory = [...g.history];
-            let activeHistoryRecord = updatedHistory.find(h => h.id === g.activeSettlementId);
             
-            // If no active settlement session exists, create one
-            if (!activeHistoryRecord) {
-                activeHistoryRecord = {
-                    id: g.activeSettlementId || generateId(),
-                    startDate: new Date().toISOString(),
-                    endDate: new Date().toISOString(),
-                    summary: '結算進行中...',
-                    visualGraph: '',
-                    expenses: [], // We don't move expenses here until everyone is done
-                    settlementPlan: [],
-                    totalSpent: 0,
-                    isPartial: true
-                };
-                updatedHistory = [activeHistoryRecord, ...updatedHistory];
-            }
-
-            // Append my transactions to the plan (for the chart)
-            // Filter duplicates if any logic runs twice
-            const newPlan = [...activeHistoryRecord.settlementPlan, ...myTxns];
-
-            const updatedCleared = [...(g.clearedMemberIds || []), myMemberId];
-            const isEveryoneCleared = g.members.every(m => updatedCleared.includes(m.id));
-
-            // Finalize if everyone is done
-            let finalExpenses = g.expenses;
-            if (isEveryoneCleared) {
-                activeHistoryRecord.isPartial = false;
-                activeHistoryRecord.expenses = [...g.expenses];
-                activeHistoryRecord.totalSpent = g.expenses.reduce((acc, curr) => acc + curr.totalAmount, 0);
-                // Also trigger AI generation here conceptually, but for now we mark it done
-                activeHistoryRecord.summary = "所有成員已結清帳務。";
-                finalExpenses = []; // Clear active
-            }
-
-            // Update the record in the array
-            updatedHistory[0] = { ...activeHistoryRecord, settlementPlan: newPlan };
-
             return {
                 ...g,
-                expenses: finalExpenses,
-                history: updatedHistory,
-                clearedMemberIds: isEveryoneCleared ? [] : updatedCleared,
-                activeSettlementId: isEveryoneCleared ? undefined : activeHistoryRecord.id
+                expenses: [], // Clear active expenses
+                history: [newHistoryRecord, ...g.history], // Add to history
+                clearedMemberIds: [], // Reset cleared status
+                activeSettlementId: undefined // Reset settlement session
             };
         }));
 
         setSettlementResult(null);
-        setView('DASHBOARD');
-        window.scrollTo(0, 0);
+        
+        // Use timeout to ensure state updates before navigating
+        setTimeout(() => {
+            setView('DASHBOARD');
+            window.scrollTo(0, 0);
+        }, 100);
 
     } catch (e) {
         console.error(e);
-        alert("結算過程發生錯誤");
+        alert("歸檔過程發生錯誤，請重試。");
     } finally {
         setIsProcessingHistory(false);
     }
@@ -657,58 +625,46 @@ const App: React.FC = () => {
                         </div>
                     </div>
 
-                    {/* Personal Transactions (Highlight) */}
-                    <div className="bg-white p-6 rounded-2xl border-l-4 border-indigo-500 shadow-md">
+                    {/* All Transactions (The Solution) */}
+                    <div className="bg-white p-6 rounded-2xl border-l-4 border-green-500 shadow-md">
                         <h3 className="font-bold text-lg text-gray-800 mb-4 flex items-center gap-2">
-                             <Users className="w-5 h-5 text-indigo-600"/> 您的帳務 ({currentMemberMap.get(myMemberId!)})
+                             <CheckCircle className="w-5 h-5 text-green-600"/> 最終還款方案
                         </h3>
                         <div className="space-y-3">
-                            {settlementResult.myTransactions.length > 0 ? (
-                                settlementResult.myTransactions.map((t, i) => (
-                                    <div key={i} className="flex items-center justify-between bg-indigo-50 p-4 rounded-xl border border-indigo-100">
+                            {settlementResult.transactions.length > 0 ? (
+                                settlementResult.transactions.map((t, i) => (
+                                    <div key={i} className="flex items-center justify-between bg-green-50 p-4 rounded-xl border border-green-100">
                                         <div className="flex items-center gap-3 text-lg">
-                                            <span className={t.from === myMemberId ? "font-bold text-indigo-700" : "text-gray-600"}>{t.fromName}</span>
-                                            <ArrowRight className="text-indigo-300 w-5 h-5" />
-                                            <span className={t.to === myMemberId ? "font-bold text-indigo-700" : "text-gray-600"}>{t.toName}</span>
+                                            <span className="font-bold text-gray-700">{t.fromName}</span>
+                                            <ArrowRight className="text-green-300 w-5 h-5" />
+                                            <span className="font-bold text-gray-700">{t.toName}</span>
                                         </div>
-                                        <div className="text-xl font-mono font-bold text-indigo-600">
+                                        <div className="text-xl font-mono font-bold text-green-700">
                                             ${t.amount}
                                         </div>
                                     </div>
                                 ))
                             ) : (
-                                <div className="text-center py-4 text-gray-500 bg-gray-50 rounded-lg">您目前沒有需要處理的款項</div>
+                                <div className="text-center py-4 text-gray-500 bg-gray-50 rounded-lg">無須還款（帳務已平衡）</div>
                             )}
                         </div>
 
+                        {/* Admin Action: Clear ALL */}
                         <button 
-                            onClick={handleClearMyDebt}
-                            disabled={isProcessingHistory || settlementResult.myTransactions.length === 0}
+                            onClick={handleClearAllDebt}
+                            disabled={isProcessingHistory}
                             className={`mt-6 w-full py-4 text-white rounded-xl font-bold shadow-lg flex items-center justify-center gap-2 transition-all
-                                ${isProcessingHistory || settlementResult.myTransactions.length === 0 
+                                ${isProcessingHistory
                                     ? 'bg-gray-400 cursor-not-allowed shadow-none' 
                                     : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200'}
                             `}
                         >
-                            {isProcessingHistory ? <Loader2 className="animate-spin"/> : <CheckCircle/>}
-                            {settlementResult.myTransactions.length === 0 ? "無須清償" : "確認清償 (歸檔我的部分)"}
+                            {isProcessingHistory ? <Loader2 className="animate-spin"/> : <Archive/>}
+                            {isProcessingHistory ? "歸檔處理中..." : "清償所有欠款 (歸檔本次活動)"}
                         </button>
                         <p className="text-xs text-center text-gray-400 mt-2">
-                            按下清償後，您的帳務將歸零並列入下方歷史紀錄。其他人的帳務則保留至他們各自確認清償。
+                            按下歸檔後，系統將清空所有消費，生成歷史圖表，讓您開始新一輪記帳。
                         </p>
-                    </div>
-
-                    {/* All Transactions (Reference) */}
-                    <div className="opacity-70 mt-8">
-                        <h4 className="text-sm font-bold text-gray-500 mb-2 uppercase tracking-wide">全體結算預覽</h4>
-                        <div className="bg-gray-100 rounded-xl p-4 space-y-2">
-                            {settlementResult.transactions.map((t,i) => (
-                                <div key={i} className="flex justify-between text-sm text-gray-600">
-                                    <span>{t.fromName} → {t.toName}</span>
-                                    <span className="font-mono">${t.amount}</span>
-                                </div>
-                            ))}
-                        </div>
                     </div>
                 </>
             ) : null}
@@ -718,7 +674,7 @@ const App: React.FC = () => {
   }
 
   // --- Render 5: Dashboard (Main) ---
-  const activeExpenses = isMyDebtCleared ? [] : (currentGroup?.expenses || []);
+  const activeExpenses = currentGroup?.expenses || [];
   const historyCount = (currentGroup?.history?.length || 0);
 
   return (
@@ -747,21 +703,18 @@ const App: React.FC = () => {
          {/* Member Status Bar */}
          <div className="mb-6 overflow-x-auto scrollbar-hide">
             <div className="flex items-center gap-2">
-                {currentGroup?.members.map(m => {
-                    const isCleared = currentGroup.clearedMemberIds?.includes(m.id);
-                    return (
-                        <div key={m.id} className={`flex-shrink-0 px-3 py-1.5 rounded-full border text-sm font-medium flex items-center gap-1
-                             ${isCleared ? 'bg-green-100 border-green-200 text-green-700' : 'bg-white border-gray-200 text-gray-700'}
-                        `}>
-                            {m.name}
-                            {isCleared && <CheckCircle className="w-3 h-3"/>}
-                        </div>
-                    );
-                })}
-                {/* Add Member Button */}
-                <div className="flex-shrink-0 flex items-center gap-1 bg-gray-100 px-3 py-1.5 rounded-full border border-gray-200">
-                     <input type="text" placeholder="新成員..." value={newMemberName} onChange={e=>setNewMemberName(e.target.value)} className="bg-transparent w-20 text-sm outline-none"/>
-                     <button onClick={handleAddMember} className="bg-indigo-600 text-white rounded-full p-0.5"><Plus className="w-3 h-3"/></button>
+                {currentGroup?.members.map(m => (
+                    <div key={m.id} className="flex-shrink-0 px-3 py-1.5 rounded-full border text-sm font-medium flex items-center gap-1 bg-white border-gray-200 text-gray-700">
+                        {m.name}
+                    </div>
+                ))}
+                
+                {/* Add Member Control */}
+                <div className="flex-shrink-0 flex items-center gap-2">
+                    <div className="flex items-center gap-1 bg-gray-100 px-3 py-1.5 rounded-full border border-gray-200">
+                        <input type="text" placeholder="新成員..." value={newMemberName} onChange={e=>setNewMemberName(e.target.value)} className="bg-transparent w-20 text-sm outline-none"/>
+                        <button onClick={handleAddMember} className="bg-indigo-600 text-white rounded-full p-0.5"><Plus className="w-3 h-3"/></button>
+                    </div>
                 </div>
             </div>
          </div>
@@ -770,14 +723,14 @@ const App: React.FC = () => {
          <div className="space-y-4">
              {activeExpenses.length === 0 ? (
                  <div className="text-center py-10">
-                     <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${isMyDebtCleared ? 'bg-green-100' : 'bg-indigo-50'}`}>
-                         {isMyDebtCleared ? <CheckCircle className="w-8 h-8 text-green-500"/> : <CreditCard className="w-8 h-8 text-indigo-400"/>}
+                     <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 bg-indigo-50">
+                         <CreditCard className="w-8 h-8 text-indigo-400"/>
                      </div>
                      <h3 className="text-gray-900 font-medium">
-                         {isMyDebtCleared ? "您的帳務已結清" : "還沒有消費紀錄"}
+                         還沒有消費紀錄
                      </h3>
                      <p className="text-gray-500 text-sm">
-                         {isMyDebtCleared ? "等待其他成員完成結算..." : "點擊下方按鈕新增第一筆支出"}
+                         點擊下方按鈕新增第一筆支出
                      </p>
                  </div>
              ) : (
@@ -840,14 +793,12 @@ const App: React.FC = () => {
       </main>
 
       {/* Floating Action Bar */}
-      {!isMyDebtCleared && (
-          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-4 z-50">
-            <button onClick={() => openAddExpense()} className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-3 rounded-full shadow-lg hover:bg-indigo-700 font-bold text-lg"><Plus className="w-6 h-6"/> 記一筆</button>
-            {activeExpenses.length > 0 && (
-                <button onClick={handleCalculateSettlement} className="flex items-center gap-2 bg-white text-gray-800 px-6 py-3 rounded-full shadow-lg border border-gray-100 font-bold"><Calculator className="w-5 h-5 text-green-500"/> 結算</button>
-            )}
-          </div>
-      )}
+      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-4 z-50">
+        <button onClick={() => openAddExpense()} className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-3 rounded-full shadow-lg hover:bg-indigo-700 font-bold text-lg"><Plus className="w-6 h-6"/> 記一筆</button>
+        {activeExpenses.length > 0 && (
+            <button onClick={handleCalculateSettlement} className="flex items-center gap-2 bg-white text-gray-800 px-6 py-3 rounded-full shadow-lg border border-gray-100 font-bold"><Calculator className="w-5 h-5 text-green-500"/> 結算</button>
+        )}
+      </div>
     </div>
   );
 };
