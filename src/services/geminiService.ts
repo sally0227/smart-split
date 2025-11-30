@@ -1,6 +1,7 @@
-declare const process: any;
 import { GoogleGenAI } from "@google/genai";
-import { Expense, Group, Member, Transaction } from "../types";
+import { Expense, Group, Transaction } from "../types";
+
+declare const process: any;
 
 const getAiClient = () => {
   // Use try-catch to safely access process.env in different environments
@@ -128,4 +129,3 @@ export const explainSettlementLogic = async (
     return "系統已自動簡化債務關係。";
   }
 };
-
